@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Шахматы на троих</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/game.js"></script>
+<script src="/layout.js"></script>
+<style>
+  :root { --bg: var(--tg-theme-bg-color, #16181d); --fg: var(--tg-theme-text-color, #eceff4);
+          --hint: var(--tg-theme-hint-color, #8b93a1); --btn: var(--tg-theme-button-color, #3d8bfd);
+          --btnfg: var(--tg-theme-button-text-color, #fff); --card: var(--tg-theme-secondary-bg-color, #22252c); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { min-height: 100%; background: var(--bgfill, var(--bg)); background-attachment: fixed; }
+  body { margin: 0; min-height: 100vh; background: transparent; color: var(--fg);
+         font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  #app { max-width: 560px; margin: 0 auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
+  #top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #top .brand { font-weight: 700; font-size: 15px; }
+  #top .btns { display: flex; gap: 6px; }
+  #seats { display: none; gap: 6px; }
+  .chip { flex: 1; min-width: 0; background: var(--card); border-radius: 10px; padding: 6px 8px; font-size: 13px;
+          display: flex; align-items: center; gap: 6px; border: 2px solid transparent; }
+  .chip.turn { border-color: var(--btn); }
+  .chip.dead { opacity: .45; text-decoration: line-through; }
+  .chip .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; border: 1.5px solid rgba(128,128,128,.7); }
+  .chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status { text-align: center; font-size: 15px; min-height: 22px; }
+  #status.warn { color: #ff6b5e; font-weight: 600; }
+  #boardWrap { display: flex; justify-content: center; }
+  #boardWrap svg { width: 100%; height: auto; max-height: calc(100vh - 190px); touch-action: manipulation; user-select: none; }
+  svg .np { pointer-events: none; }
+  .card { background: var(--card); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  #menu { text-align: center; margin-top: 6px; }
+  #menu h2 { margin: 0; font-size: 22px; }
+  #menu .sub { color: var(--hint); font-size: 14px; margin-top: -6px; }
+  #menu .or { color: var(--hint); font-size: 13px; }
+  #menu .row { display: flex; gap: 8px; }
+  #menu input { flex: 1; min-width: 0; background: rgba(128,128,128,.18); color: var(--fg); border: 0; border-radius: 10px; padding: 11px 12px; font-size: 15px; }
+  #menu input::placeholder { color: var(--hint); }
+  #lobby { text-align: center; display: none; }
+  #lobby .code { font-size: 30px; letter-spacing: 6px; font-weight: 700; }
+  #lobby .hint { color: var(--hint); font-size: 14px; }
+  #actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  button { background: var(--btn); color: var(--btnfg); border: 0; border-radius: 10px; padding: 11px 18px; font-size: 15px; font-weight: 600; font-family: inherit; }
+  button.sec { background: var(--card); color: var(--fg); }
+  button.big { width: 100%; padding: 14px 18px; font-size: 16px; }
+  button.ic { padding: 7px 12px; font-size: 13px; }
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 5; padding: 14px; }
+  #promo .box { background: var(--card, #22252c); border-radius: 14px; padding: 14px; display: flex; gap: 10px; }
+  #promo button { font-size: 34px; padding: 6px 14px; background: #e9d8b4; color: #222; }
+  .sheet { background: var(--tg-theme-bg-color, #22252c); color: var(--tg-theme-text-color, #eceff4); border-radius: 16px; padding: 16px; width: 100%; max-width: 540px;
+           max-height: 88vh; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  .sheet h3 { margin: 0; font-size: 18px; }
+  .sheet h4 { margin: 10px 0 2px; font-size: 15px; }
+  .sheet p, .sheet li { font-size: 14.5px; line-height: 1.42; margin: 4px 0; }
+  .sheet ul { margin: 4px 0; padding-left: 20px; }
+  .sheet .note { color: var(--tg-theme-hint-color, #8b93a1); font-size: 13px; }
+  .fig { text-align: center; font-size: 12.5px; color: var(--tg-theme-hint-color, #8b93a1); display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 6px 0; }
+  .fig svg { width: 100%; max-width: 440px; height: auto; }
+  .sws { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .sw { height: 56px; border-radius: 12px; border: 3px solid transparent; font-size: 14px; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,.35); color: #fff; }
+  .sw.light { color: #1c1f26; text-shadow: none; }
+  .sw.on { border-color: var(--btn); }
+  .cust { display: flex; align-items: center; justify-content: space-between; font-size: 14px; gap: 10px; }
+  .cust input { width: 64px; height: 38px; border: 0; padding: 0; background: none; }
+  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #000c; color: #fff; padding: 9px 14px;
+           border-radius: 10px; font-size: 14px; display: none; z-index: 9; max-width: 90%; text-align: center; }
+  #offline { display: none; text-align: center; color: #ff6b5e; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div class="brand">♟ Шахматы на троих</div>
+    <div class="btns">
+      <button class="sec ic" id="bRules">Правила</button>
+      <button class="sec ic" id="bBg">Фон</button>
+    </div>
+  </div>
+
+  <div id="menu" class="card">
+    <h2>Новая партия</h2>
+    <div class="sub">Выберите, как хотите играть</div>
+    <button class="big" id="mBots">🤖 Играть с ботами</button>
+    <button class="big" id="mCreate">👥 Создать игру с друзьями</button>
+    <div class="or">или присоединитесь к игре друзей</div>
+    <div class="row">
+      <input id="joinIn" placeholder="Ссылка или код комнаты" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="joinBtn">Войти</button>
+    </div>
+  </div>
+
+  <div id="seats"></div>
+  <div id="offline">Нет соединения, переподключаюсь…</div>
+  <div id="status"></div>
+  <div id="boardWrap"></div>
+  <div id="lobby" class="card"></div>
+  <div id="actions"></div>
+</div>
+
+<div id="promo" class="overlay"><div class="box"></div></div>
+<div id="modal" class="overlay"><div class="sheet"><h3 id="mt"></h3><div id="mb"></div><button id="mc">Закрыть</button></div></div>
+<div id="toast"></div>
+
+<script>
+(() => {
+  const tg = window.Telegram && Telegram.WebApp;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+  const params = new URLSearchParams(location.search);
+  const linkRoom = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('room') || null;
+  let devId = null;
+  try { devId = sessionStorage.getItem('devId'); } catch (e) {}
+  if (!devId) { devId = Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem('devId', devId); } catch (e) {} }
+  const devName = params.get('name') || 'Игрок ' + devId.slice(0, 3);
+
+  const COLORS = ['#f3efe6', '#d8483d', '#2a2a2e'];
+  const STROKE = ['#222', '#4a0d08', '#e6e6e6'];
+  const NAMES = ['белые', 'красные', 'чёрные'];
+  const DEAD = '#8a8f98';
+  const GLYPH = { K: '♚', Q: '♛', R: '♜', B: '♝', N: '♞', P: '♟' };
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let st = null, ws = null, joinMsg = null, sel = -1, legal = {};
+
+  // ================= карта =================
+  // Клетки и их соседство берутся из game.js, положение клеток на плоскости — из layout.js
+  // (одно и то же на клиенте, сервере и в схемах правил).
+  const G = window.Chess3, LAY = window.Chess3Layout;
+  const UNIT = 5; // одна клетка ≈ 1 единица карты
+  const cidx = G.cid;
+
+  function polys(view) {
+    return LAY.get().poly.map((q) => {
+      const pts = q.map((p) => { const r = LAY.rot(p, view); return [r[0] * UNIT, -r[1] * UNIT]; });
+      let a = 0;
+      for (let k = 0; k < 4; k++) { const u = pts[k], w = pts[(k + 1) & 3]; a += u[0] * w[1] - w[0] * u[1]; }
+      return {
+        pts, sz: Math.sqrt(Math.abs(a) / 2),
+        ctr: [(pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4, (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4],
+      };
+    });
+  }
+
+  /* Рисует карту. o: view, S, pieces[96] ('0K'…), alive, last{from,to}, sel, targets[{c,cap}], check[],
+     marks[{c,color,kind}], interactive, pad, decor(S, view, P) -> svg-строка */
+  function mapSvg(o) {
+    const view = o.view || 0, S = o.S || 30, P = polys(view);
+    let minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+    for (const q of P) for (const [x, y] of q.pts) { minx = Math.min(minx, x); miny = Math.min(miny, y); maxx = Math.max(maxx, x); maxy = Math.max(maxy, y); }
+    const pad = o.pad === undefined ? 0.4 : o.pad;
+    const vx = (minx - pad) * S, vy = (miny - pad) * S, vw = (maxx - minx + 2 * pad) * S, vh = (maxy - miny + 2 * pad) * S;
+    const pts = (q) => q.pts.map(([x, y]) => `${(x * S).toFixed(1)},${(y * S).toFixed(1)}`).join(' ');
+    const sc = (c) => [P[c].ctr[0] * S, P[c].ctr[1] * S];
+    const rs = (c, k) => S * Math.min(k, k * P[c].sz); // размеры значков подгоняются под размер клетки
+    let base = '', over = '', pcs = '';
+    for (let c = 0; c < 96; c++) {
+      const a = G.secOf(c), dark = (G.fileOf(c) + G.rankOf(c)) % 2;
+      base += `<polygon ${o.interactive ? `data-c="${c}"` : ''} points="${pts(P[c])}" fill="${dark ? '#b58863' : '#ecd9b6'}" stroke="rgba(0,0,0,.45)" stroke-width=".7" stroke-linejoin="round"/>`;
+      base += `<polygon class="np" points="${pts(P[c])}" fill="${COLORS[a]}" opacity=".3"/>`;
+    }
+    if (o.last) for (const c of [o.last.from, o.last.to]) over += `<polygon class="np" points="${pts(P[c])}" fill="#ffe04d" opacity=".5"/>`;
+    if (o.sel !== undefined && o.sel >= 0) over += `<polygon class="np" points="${pts(P[o.sel])}" fill="none" stroke="#2f80ed" stroke-width="3" stroke-linejoin="round"/>`;
+    if (o.check) {
+      (o.pieces || []).forEach((pc, c) => {
+        if (pc && pc[1] === 'K' && o.check[+pc[0]] && o.alive[+pc[0]]) { const [x, y] = sc(c); over += `<circle class="np" cx="${x}" cy="${y}" r="${rs(c, 0.45)}" fill="#ff3b30" opacity=".55"/>`; }
+      });
+    }
+    for (const m of o.marks || []) {
+      const [x, y] = sc(m.c);
+      if (m.kind === 'star') over += `<text class="np" x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-size="${rs(m.c, 0.85)}" fill="${m.color}" stroke="#fff" stroke-width="2" paint-order="stroke">★</text>`;
+      else if (m.kind === 'ring') over += `<circle class="np" cx="${x}" cy="${y}" r="${rs(m.c, 0.4)}" fill="none" stroke="${m.color}" stroke-width="3"/>`;
+      else over += `<circle class="np" cx="${x}" cy="${y}" r="${rs(m.c, 0.2)}" fill="${m.color}" stroke="#fff" stroke-width="1.3"/>`;
+    }
+    for (const t of o.targets || []) {
+      const [x, y] = sc(t.c);
+      over += t.cap ? `<circle class="np" cx="${x}" cy="${y}" r="${rs(t.c, 0.42)}" fill="none" stroke="#2f80ed" stroke-width="3.5"/>`
+                    : `<circle class="np" cx="${x}" cy="${y}" r="${rs(t.c, 0.2)}" fill="#2f80ed" opacity=".85"/>`;
+    }
+    (o.pieces || []).forEach((pc, c) => {
+      if (!pc) return;
+      const ow = +pc[0], [x, y] = sc(c), dead = o.alive && !o.alive[ow];
+      pcs += `<text class="np" x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="central" font-size="${rs(c, 0.85 * (o.ps || 1))}"
+        fill="${dead ? DEAD : COLORS[ow]}" stroke="${dead ? '#444' : STROKE[ow]}" stroke-width="1.2" paint-order="stroke">${GLYPH[pc[1]]}︎</text>`;
+    });
+    const dec = o.decor ? o.decor(S, view, P) : '';
+    return `<svg viewBox="${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}" xmlns="http://www.w3.org/2000/svg">${base}${over}${dec}${pcs}</svg>`;
+  }
+
+  // ================= сеть =================
+  function stopConn() { const s = ws; ws = null; if (s) { s.onclose = null; try { s.close(); } catch (e) {} } }
+  function startJoin(opts) { stopConn(); st = null; sel = -1; joinMsg = opts; render(); connect(); }
+  function toMenu() { stopConn(); st = null; sel = -1; joinMsg = null; $('offline').style.display = 'none'; render(); }
+  function connect() {
+    const s = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+    ws = s;
+    s.onopen = () => {
+      if (ws !== s) return;
+      $('offline').style.display = 'none';
+      s.send(JSON.stringify({ type: 'join', mode: joinMsg.mode, room: joinMsg.room, initData: tg ? tg.initData : '', devId, name: devName }));
+    };
+    s.onmessage = (e) => {
+      if (ws !== s) return;
+      const m = JSON.parse(e.data);
+      if (m.type === 'state') { st = m; joinMsg = { mode: 'join', room: m.room }; sel = -1; indexLegal(); render(); }
+      else if (m.type === 'error') { toast(m.msg); if (m.code === 'noroom') toMenu(); }
+    };
+    s.onclose = () => {
+      if (ws !== s) return;
+      $('offline').style.display = 'block';
+      setTimeout(() => { if (ws === s) connect(); }, 1500);
+    };
+  }
+  const sendMsg = (o) => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+  function indexLegal() {
+    legal = {};
+    if (!st || !st.legal) return;
+    for (const [from, to, pr] of st.legal) (legal[from] = legal[from] || []).push({ to, pr });
+  }
+  function toast(t) {
+    const el = $('toast'); el.textContent = t; el.style.display = 'block';
+    clearTimeout(toast.t); toast.t = setTimeout(() => (el.style.display = 'none'), 2600);
+  }
+  function ask(text, ok) {
+    if (tg && tg.showConfirm) tg.showConfirm(text, (r) => r && ok());
+    else if (confirm(text)) ok();
+  }
+
+  // ================= стартовое меню =================
+  function parseCode(t) {
+    t = String(t || '').trim();
+    let m = t.match(/[?&](?:startapp|room|start)=([A-Za-z0-9]{3,8})/);
+    if (m) return m[1].toUpperCase();
+    if (/^[A-Za-z0-9]{3,8}$/.test(t)) return t.toUpperCase();
+    return null;
+  }
+  $('mBots').onclick = () => startJoin({ mode: 'bots' });
+  $('mCreate').onclick = () => startJoin({ mode: 'create' });
+  function doJoin() {
+    const code = parseCode($('joinIn').value);
+    if (!code) { toast('Вставьте ссылку-приглашение или код комнаты'); return; }
+    startJoin({ mode: 'join', room: code });
+  }
+  $('joinBtn').onclick = doJoin;
+  $('joinIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') doJoin(); });
+
+  function inviteUrl() { return st.invite || `${location.origin}/?room=${st.room}`; }
+  function invite() {
+    const url = inviteUrl(), text = 'Сыграем в шахматы на троих!';
+    if (tg && /^https:\/\/t\.me\//.test(url)) tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text));
+    else if (navigator.share) navigator.share({ title: text, url }).catch(() => {});
+    else if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => toast('Ссылка скопирована'));
+    else prompt('Ссылка-приглашение:', url);
+  }
+
+  // ================= окна: правила и фон =================
+  function openModal(title, html) { $('mt').textContent = title; $('mb').innerHTML = html; $('modal').style.display = 'flex'; $('modal').querySelector('.sheet').scrollTop = 0; }
+  function closeModal() { $('modal').style.display = 'none'; }
+  $('mc').onclick = closeModal;
+  $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) closeModal(); });
+
+  const fig = (svg, cap) => `<div class="fig">${svg}<div>${cap}</div></div>`;
+  const piecesOf = (list) => { const a = new Array(96).fill(null); for (const [c, o, t] of list) a[c] = '' + o + t; return a; };
+
+  // куда пойдёт фигура на пустой доске (считает та же game.js, что и в партии)
+  function reach(piece, c, attackOnly) {
+    const g = { board: new Array(96).fill(null), alive: [true, true, true] };
+    g.board[c] = piece;
+    return G.gen(g, 0, attackOnly).map((m) => m.to);
+  }
+  const dots = (cells, color) => cells.map((c) => ({ c, color }));
+  const pt = (P, S, c) => `${(P[c].ctr[0] * S).toFixed(1)},${(P[c].ctr[1] * S).toFixed(1)}`;
+  // ломаные через центры клеток: линии горизонталей / вертикалей / диагоналей
+  const lineDecor = (paths) => (S, view, P) => paths.map(({ cells, color, w }) => {
+    const d = cells.map((c) => pt(P, S, c)).join(' ');
+    return `<polyline class="np" points="${d}" fill="none" stroke="#fff" stroke-opacity=".9" stroke-width="${S * (w || 0.2) + 3}" stroke-linecap="round" stroke-linejoin="round"/>` +
+           `<polyline class="np" points="${d}" fill="none" stroke="${color}" stroke-width="${S * (w || 0.2)}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+  const ringPath = (r) => { const a = []; for (let s = 0; s < 3; s++) for (let f = 0; f < 8; f++) a.push(cidx(s, f, r)); a.push(a[0]); return a; };
+  const rayPath = (c, k, table) => [c].concat(table[c * 4 + k]);
+
+  function rulesHtml() {
+    // 1. карта линий — как на схеме: горизонтали, вертикали, диагонали
+    const linesFig = mapSvg({
+      view: 0, S: 36, pad: 0.6,
+      decor: lineDecor([
+        { cells: ringPath(0), color: '#f2c200' }, { cells: ringPath(2), color: '#f2c200' },
+        { cells: rayPath(cidx(0, 2, 0), 0, G.ROOK_RAY), color: '#e03131' }, { cells: rayPath(cidx(0, 5, 0), 0, G.ROOK_RAY), color: '#e03131' },
+        { cells: rayPath(cidx(0, 0, 0), 1, G.BISHOP_RAY), color: '#2f9e44' }, { cells: rayPath(cidx(0, 7, 0), 0, G.BISHOP_RAY), color: '#2f9e44' },
+      ]),
+    });
+    const sw = (c, t) => `<span style="display:inline-block;width:22px;height:5px;border-radius:3px;background:${c};vertical-align:middle;margin-right:6px"></span>${t}`;
+    // 2. ладья
+    const rc = cidx(0, 5, 1);
+    const rookFig = mapSvg({ S: 36, ps: 1.6, pieces: piecesOf([[rc, 0, 'R']]), marks: dots(reach({ t: 'R', o: 0 }, rc), '#2f80ed') });
+    // 3. слон
+    const bc = cidx(0, 2, 1);
+    const bishopFig = mapSvg({ S: 36, ps: 1.6, pieces: piecesOf([[bc, 0, 'B']]), marks: dots(reach({ t: 'B', o: 0 }, bc), '#2f9e44') });
+    // 4. ферзь
+    const qc = cidx(0, 3, 0);
+    const queenFig = mapSvg({ S: 36, ps: 1.6, pieces: piecesOf([[qc, 0, 'Q']]), marks: dots(reach({ t: 'Q', o: 0 }, qc), '#e8590c') });
+    // 5. конь
+    const nc = cidx(0, 6, 3);
+    const knightFig = mapSvg({ S: 36, ps: 1.6, pieces: piecesOf([[nc, 0, 'N']]), marks: dots(reach({ t: 'N', o: 0 }, nc), '#9b51e0') });
+    // 6. король
+    const kc = cidx(0, 4, 3);
+    const kingFig = mapSvg({ S: 36, ps: 1.6, pieces: piecesOf([[kc, 0, 'K']]), marks: dots(reach({ t: 'K', o: 0 }, kc), '#e0a100') });
+    // 7. пешка: путь через центр в чужой сектор + взятия
+    const pc = cidx(0, 5, 1), pawn = { t: 'P', o: 0, h: 0, st: true };
+    const route = [];
+    for (let cur = pc, h = 0, n = 0; n < 12; n++) {
+      const fw = G.PFWD[cur * 4 + h]; if (!fw) break;
+      route.push(fw.c); cur = fw.c; h = fw.h;
+      if (G.secOf(cur) !== 0 && G.rankOf(cur) === 0) break;
+    }
+    const pawnMarks = dots(route.slice(0, -1), '#f2711c').concat([{ c: route[route.length - 1], color: '#f2711c', kind: 'star' }]);
+    const caps = reach(pawn, pc, true);
+    const pawnFig = mapSvg({ S: 36, ps: 1.6, pieces: piecesOf([[pc, 0, 'P']]), marks: pawnMarks.concat(caps.map((c) => ({ c, color: '#2f80ed', kind: 'ring' }))) });
+
+    return `
+    <h4>Доска</h4>
+    <p>96 клеток: три сектора по 8×4, по одному у каждого игрока. В секторе 8 вертикалей (a–h слева направо) и 4 горизонтали: первая — ваша линия фигур, четвёртая — у центра. Ходят по часовой стрелке: белые → чёрные → красные. В игре ваш сектор всегда внизу.</p>
+    ${fig(linesFig, `${sw('#f2c200', 'горизонтали')} &nbsp; ${sw('#e03131', 'вертикали')} &nbsp; ${sw('#2f9e44', 'диагонали')}`)}
+    <ul>
+      <li><b>Горизонтали</b> — замкнутые кольца из 24 клеток вокруг центра: правый край вашего сектора продолжается левым краем соседа справа, и так по кругу.</li>
+      <li><b>Вертикали</b> идут к центру и там переходят в соседний сектор: правая половина (e–h) — в сектор справа, левая (a–d) — в сектор слева, зеркально (h→a, g→b, f→c, e→d). Дальше вертикаль идёт от центра к краю чужого сектора.</li>
+      <li><b>Диагонали</b> тоже огибают центр и уходят в соседние сектора. В самом центре сходятся 6 клеток; диагональ, дошедшая до центра, продолжается на противоположной клетке.</li>
+    </ul>
+
+    <h4>Как ходят фигуры</h4>
+    <p><b>♜ Ладья</b> — по вертикали и по горизонтали на любое число свободных клеток. Вертикаль продолжается через центр, горизонталь — по кольцу вокруг всей доски. Уже в начале партии угловая ладья смотрит по кольцу на угловую ладью соседа и может её взять.</p>
+    ${fig(rookFig, 'Ладья и все её ходы на пустой доске')}
+    <p><b>♝ Слон</b> — по диагоналям на любое число свободных клеток, в том числе через центр в соседние сектора.</p>
+    ${fig(bishopFig, 'Слон и все его ходы на пустой доске')}
+    <p><b>♛ Ферзь</b> — ходит как ладья и как слон.</p>
+    ${fig(queenFig, 'Ферзь и все его ходы на пустой доске')}
+    <p><b>♞ Конь</b> — «буквой Г»: две клетки в одну сторону и одна вбок. Перепрыгивает фигуры, в том числе через центр и стыки секторов.</p>
+    ${fig(knightFig, 'Конь у центра: часть прыжков уходит в соседние сектора')}
+    <p><b>♚ Король</b> — на одну клетку в любую сторону. У центра он может шагнуть и на клетки соседних секторов, которых касается углом.</p>
+    ${fig(kingFig, 'Король у центра и все его ходы')}
+    <p><b>♟ Пешка</b> — вперёд к центру на одну клетку (с первой линии — на одну или две), бьёт по диагонали вперёд. Дойдя до центра, переходит в соседний сектор и идёт там к его первой линии. Дойдя до неё, превращается в ферзя, ладью, слона или коня на ваш выбор.</p>
+    ${fig(pawnFig, 'Путь пешки (оранжевые точки), ★ — клетка превращения; кольца — клетки, которые пешка бьёт')}
+
+    <h4>Цель и конец партии</h4>
+    <p>Шаха и мата нет — нужно <b>взять короля</b>. Король под ударом подсвечивается красным, но ходить можно как угодно, так что не зевайте. Игрок, потерявший короля, выбывает; его фигуры становятся серыми и остаются на доске: они не ходят, но их можно брать. Побеждает последний игрок с королём. Ничья — если ни у кого нет ходов или сыграно 450 ходов. Рокировки и взятия на проходе нет.</p>
+
+    <h4>Управление</h4>
+    <p>Коснитесь своей фигуры — подсветятся ходы (точка — ход, кольцо — взятие), затем коснитесь клетки. Жёлтым отмечен последний ход.</p>
+    <div class="note">Боты играют простой жадной стратегией: берут то, что не защищено, и стараются не подставляться.</div>`;
+  }
+  $('bRules').onclick = () => openModal('Правила игры', rulesHtml());
+
+  const BGS = [
+    { id: 'tg', name: 'Как в Telegram', css: 'var(--tg-theme-bg-color, #16181d)', dark: true },
+    { id: 'night', name: 'Ночь', css: '#14161b', dark: true },
+    { id: 'felt', name: 'Сукно', css: 'radial-gradient(circle at 50% 30%, #2f6b4f, #143626)', dark: true },
+    { id: 'ocean', name: 'Океан', css: 'linear-gradient(160deg, #1c3b6b, #0b1b36)', dark: true },
+    { id: 'dusk', name: 'Закат', css: 'linear-gradient(160deg, #6b2a5b, #1f1a3d 60%, #0e1730)', dark: true },
+    { id: 'wood', name: 'Дерево', css: 'linear-gradient(135deg, #7a5230, #4b2f18)', dark: true },
+    { id: 'paper', name: 'Бумага', css: '#f3efe6', dark: false },
+    { id: 'sky', name: 'Небо', css: 'linear-gradient(180deg, #dcebff, #f7fbff)', dark: false },
+  ];
+  let curBg = { id: 'tg' };
+  function applyBg(o, save) {
+    const r = document.documentElement.style;
+    if (!o || o.id === 'tg') { ['--bgfill', '--fg', '--card', '--hint'].forEach((k) => r.removeProperty(k)); o = { id: 'tg' }; }
+    else {
+      r.setProperty('--bgfill', o.css);
+      r.setProperty('--fg', o.dark ? '#eef1f6' : '#1c1f26');
+      r.setProperty('--card', o.dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.07)');
+      r.setProperty('--hint', o.dark ? '#b9c0cc' : '#5b6372');
+    }
+    curBg = o;
+    if (save) { try { localStorage.setItem('chess3bg', JSON.stringify(o)); } catch (e) {} }
+  }
+  function bgHtml() {
+    const sws = BGS.map((b) => `<button class="sw${b.dark ? '' : ' light'}${curBg.id === b.id ? ' on' : ''}" data-bg="${b.id}" style="background:${b.css}">${b.name}</button>`).join('');
+    const cv = curBg.id === 'custom' && /^#[0-9a-f]{6}$/i.test(curBg.css) ? curBg.css : '#14161b';
+    return `<div class="sws">${sws}</div><label class="cust">Свой цвет <input type="color" id="bgc" value="${cv}"></label>`;
+  }
+  $('bBg').onclick = () => openModal('Фон', bgHtml());
+  $('mb').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-bg]');
+    if (!b) return;
+    applyBg(BGS.find((x) => x.id === b.dataset.bg), true);
+    $('mb').innerHTML = bgHtml();
+  });
+  $('mb').addEventListener('input', (e) => {
+    if (e.target.id !== 'bgc') return;
+    const c = e.target.value, n = parseInt(c.slice(1), 16);
+    const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    applyBg({ id: 'custom', css: c, dark: lum < 0.55 }, true);
+    document.querySelectorAll('.sw.on').forEach((x) => x.classList.remove('on'));
+  });
+  try { const saved = JSON.parse(localStorage.getItem('chess3bg') || 'null'); if (saved) applyBg(saved, false); } catch (e) {}
+
+  // ================= экран игры =================
+  function addBtn(label, fn, sec) {
+    const b = document.createElement('button');
+    b.textContent = label; if (sec) b.className = 'sec'; b.onclick = fn;
+    $('actions').appendChild(b);
+  }
+
+  function render() {
+    const seatsEl = $('seats'), lobby = $('lobby'), wrap = $('boardWrap'), status = $('status');
+    $('actions').innerHTML = ''; status.className = '';
+
+    if (!st) {
+      $('menu').style.display = joinMsg ? 'none' : 'flex';
+      seatsEl.style.display = 'none'; lobby.style.display = 'none'; wrap.style.display = 'none';
+      status.textContent = joinMsg ? 'Подключаюсь…' : '';
+      if (joinMsg) addBtn('Отмена', toMenu, true);
+      return;
+    }
+    $('menu').style.display = 'none';
+    seatsEl.style.display = 'flex';
+
+    const names = st.seats;
+    const label = (p) => {
+      const s = names[p];
+      if (!s) return 'ждём игрока…';
+      return (s.bot ? '🤖 ' : '') + s.name + (p === st.me ? ' (вы)' : '');
+    };
+    seatsEl.innerHTML = [0, 1, 2].map((p) => {
+      const cls = ['chip'];
+      if (st.started && st.turn === p && !st.over && st.alive[p]) cls.push('turn');
+      if (st.started && !st.alive[p]) cls.push('dead');
+      return `<div class="${cls.join(' ')}"><span class="dot" style="background:${COLORS[p]}"></span><span class="nm">${esc(label(p))}</span></div>`;
+    }).join('');
+
+    if (!st.started) {
+      wrap.style.display = 'none'; lobby.style.display = 'flex';
+      const n = names.filter(Boolean).length;
+      lobby.innerHTML = `<div class="hint">Комната</div><div class="code">${esc(st.room)}</div>
+        <div>Игроков: ${n} из 3</div>
+        <div class="hint">${st.me >= 0 ? 'Отправьте приглашение друзьям — игра начнётся, когда соберутся трое. Или добавьте ботов на свободные места.' : 'Комната ждёт игроков.'}</div>`;
+      status.textContent = '';
+      if (st.me >= 0) { addBtn('Пригласить друзей', invite); addBtn('Добавить ботов', () => sendMsg({ type: 'fillbots' }), true); }
+      addBtn('В меню', toMenu, true);
+      return;
+    }
+    lobby.style.display = 'none'; wrap.style.display = 'flex';
+    drawBoard();
+
+    if (st.over) {
+      status.textContent = st.draw ? 'Ничья' : st.winner === st.me ? '🏆 Вы победили!' : `Победил ${names[st.winner] ? names[st.winner].name : 'игрок'}`;
+      if (st.me >= 0) addBtn('Играть ещё', () => sendMsg({ type: 'rematch' }));
+    } else {
+      const mine = st.me >= 0 && st.turn === st.me;
+      if (st.me >= 0 && !st.alive[st.me]) status.textContent = 'Вы выбыли — наблюдаете за игрой';
+      else if (mine) { status.textContent = st.check[st.me] ? 'Ваш ход. Королю угрожают!' : 'Ваш ход'; if (st.check[st.me]) status.className = 'warn'; }
+      else status.textContent = 'Ходит ' + (names[st.turn] ? names[st.turn].name : '…');
+      if (st.me >= 0 && st.alive[st.me]) addBtn('Сдаться', () => ask('Сдаться? Ваши фигуры останутся на доске.', () => sendMsg({ type: 'resign' })), true);
+    }
+    addBtn('В меню', toMenu, true);
+  }
+
+  function drawBoard() {
+    const targets = sel >= 0 ? (legal[sel] || []).map((m) => ({ c: m.to, cap: !!st.board[m.to] })) : [];
+    $('boardWrap').innerHTML = mapSvg({
+      view: st.me >= 0 ? st.me : 0, S: 30, pieces: st.board, alive: st.alive, check: st.check,
+      last: st.last, sel, targets, interactive: true,
+    });
+    $('boardWrap').querySelector('svg').addEventListener('click', onClick);
+  }
+
+  function onClick(e) {
+    const el = e.target.closest('[data-c]');
+    if (!el || !st || st.over) return;
+    const c = +el.dataset.c;
+    if (sel >= 0) {
+      const m = (legal[sel] || []).find((q) => q.to === c);
+      if (m) {
+        const from = sel;
+        if (m.pr) return askPromo((promo) => { sendMsg({ type: 'move', from, to: c, promo }); sel = -1; });
+        sendMsg({ type: 'move', from, to: c }); sel = -1; return;
+      }
+    }
+    sel = legal[c] ? c : -1;
+    drawBoard();
+  }
+
+  function askPromo(cb) {
+    const box = $('promo').querySelector('.box');
+    box.innerHTML = '';
+    for (const t of ['Q', 'R', 'B', 'N']) {
+      const b = document.createElement('button');
+      b.textContent = GLYPH[t] + '︎';
+      b.onclick = () => { $('promo').style.display = 'none'; cb(t); };
+      box.appendChild(b);
+    }
+    $('promo').style.display = 'flex';
+  }
+
+  // ================= старт =================
+  render();
+  if (linkRoom) startJoin({ mode: 'join', room: String(linkRoom).toUpperCase() });
+})();
+</script>
+</body>
+</html>
