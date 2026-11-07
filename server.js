@@ -4,7 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const G = require('./game');
+const GS = require('./game');
+const GT = require('./tgame');
+const ENG = { sectors: GS, t: GT };
+const eng = (room) => ENG[room.variant] || GS;
 const B = require('./bot');
 
 const PORT = process.env.PORT || 3000;
@@ -21,6 +24,7 @@ const server = http.createServer((req, res) => {
     '/index.html': ['index.html', 'text/html; charset=utf-8'],
     '/game.js': ['game.js', 'application/javascript; charset=utf-8'],
     '/layout.js': ['layout.js', 'application/javascript; charset=utf-8'],
+    '/tgame.js': ['tgame.js', 'application/javascript; charset=utf-8'],
   };
   if (STATIC[url]) {
     res.writeHead(200, { 'content-type': STATIC[url][1], 'cache-control': 'no-cache' });
@@ -64,8 +68,8 @@ function newCode() {
   do { c = Array.from({ length: 5 }, () => ALPHA[crypto.randomInt(ALPHA.length)]).join(''); } while (rooms.has(c));
   return c;
 }
-function getRoom(code) {
-  if (!rooms.has(code)) rooms.set(code, { code, seats: [null, null, null], game: null, clients: new Set(), touched: Date.now() });
+function getRoom(code, variant) {
+  if (!rooms.has(code)) rooms.set(code, { variant: variant === 't' ? 't' : 'sectors', code, seats: [null, null, null], game: null, clients: new Set(), touched: Date.now() });
   return rooms.get(code);
 }
 function inviteLink(code) {
@@ -75,9 +79,9 @@ function inviteLink(code) {
 }
 
 function view(room, seat) {
-  const g = room.game;
+  const g = room.game, G = eng(room);
   const v = {
-    type: 'state', room: room.code, invite: inviteLink(room.code), me: seat,
+    type: 'state', variant: room.variant, room: room.code, invite: inviteLink(room.code), me: seat,
     seats: room.seats.map((s) => (s ? { name: s.name, bot: !!s.bot } : null)),
     started: !!g,
   };
@@ -100,7 +104,7 @@ function broadcast(room) {
 const BOT_NAMES = ['Бот Альфа', 'Бот Бета', 'Бот Гамма'];
 function fillWithBots(room) {
   for (let i = 0; i < 3; i++) if (!room.seats[i]) room.seats[i] = { id: 'bot-' + i, name: BOT_NAMES[i], bot: true };
-  if (!room.game) room.game = G.newGame();
+  if (!room.game) room.game = eng(room).newGame();
 }
 function scheduleBots(room) {
   const g = room.game;
@@ -114,7 +118,8 @@ function scheduleBots(room) {
     if (!cur || cur.over) return;
     const seat = room.seats[cur.turn];
     if (!seat || !seat.bot) return;
-    const m = B.chooseMove(cur, cur.turn);
+    const G = eng(room);
+    const m = B.chooseMove(cur, cur.turn, G);
     if (m) G.applyMove(cur, cur.turn, m.from, m.to, 'Q');
     broadcast(room);
   }, humanAlive ? 600 + Math.random() * 700 : 40);
@@ -148,7 +153,7 @@ wss.on('connection', (ws) => {
         return;
       }
       const isNew = !rooms.has(code);
-      const room = getRoom(code);
+      const room = getRoom(code, msg.board);
       room.touched = Date.now();
       let seat = room.seats.findIndex((s) => s && s.id === user.id);
       if (seat < 0 && !room.game) seat = room.seats.findIndex((s) => !s);
@@ -156,7 +161,7 @@ wss.on('connection', (ws) => {
       ws.ctx = { room, seat, user };
       room.clients.add(ws);
       if (mode === 'bots' && isNew) fillWithBots(room);
-      if (!room.game && room.seats.every(Boolean)) room.game = G.newGame();
+      if (!room.game && room.seats.every(Boolean)) room.game = eng(room).newGame();
       broadcast(room);
       return;
     }
@@ -168,17 +173,17 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'move' && g && seat >= 0) {
       if (!Number.isInteger(msg.from) || !Number.isInteger(msg.to)) return;
-      const r = G.applyMove(g, seat, msg.from, msg.to, msg.promo);
+      const r = eng(room).applyMove(g, seat, msg.from, msg.to, msg.promo);
       if (!r.ok) { send(ws, { type: 'error', msg: r.err }); send(ws, view(room, seat)); return; }
       broadcast(room);
     } else if (msg.type === 'resign' && g && seat >= 0) {
-      G.resign(g, seat);
+      eng(room).resign(g, seat);
       broadcast(room);
     } else if (msg.type === 'fillbots' && !g && seat >= 0) {
       fillWithBots(room);
       broadcast(room);
     } else if (msg.type === 'rematch' && g && g.over && seat >= 0) {
-      room.game = G.newGame();
+      room.game = eng(room).newGame();
       broadcast(room);
     }
   });

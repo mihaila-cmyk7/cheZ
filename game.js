@@ -307,5 +307,7 @@
     NC, cid, secOf, rankOf, fileOf, glue, star, diagNext,
     ROOK_RAY, BISHOP_RAY, KNIGHT, KING, PFWD, PCAP, kdist,
     newGame, gen, inCheck, kingPos, applyMove, resign,
+    central: rankOf,
+    progress: (p, c) => (secOf(c) === p ? rankOf(c) : 4 + (3 - rankOf(c))),
   };
 });

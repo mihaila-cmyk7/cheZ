@@ -7,6 +7,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="/game.js"></script>
 <script src="/layout.js"></script>
+<script src="/tgame.js"></script>
 <style>
   :root { --bg: var(--tg-theme-bg-color, #16181d); --fg: var(--tg-theme-text-color, #eceff4);
           --hint: var(--tg-theme-hint-color, #8b93a1); --btn: var(--tg-theme-button-color, #3d8bfd);
@@ -68,6 +69,10 @@
   #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #000c; color: #fff; padding: 9px 14px;
            border-radius: 10px; font-size: 14px; display: none; z-index: 9; max-width: 90%; text-align: center; }
   #offline { display: none; text-align: center; color: #ff6b5e; font-size: 13px; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; background: var(--card); color: var(--fg); border: 2px solid transparent; padding: 9px 8px; font-size: 14px; }
+  .seg button.on { border-color: var(--btn); }
+  .seg small { display: block; font-weight: 400; opacity: .7; font-size: 11.5px; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -82,7 +87,11 @@
 
   <div id="menu" class="card">
     <h2>Новая партия</h2>
-    <div class="sub">Выберите, как хотите играть</div>
+    <div class="sub">Выберите доску и способ игры</div>
+    <div class="seg" id="boardSel">
+      <button data-b="sectors">Доска «На троих»<small>3 сектора, кольца</small></button>
+      <button data-b="t">Доска «Т»<small>квадратные клетки</small></button>
+    </div>
     <button class="big" id="mBots">🤖 Играть с ботами</button>
     <button class="big" id="mCreate">👥 Создать игру с друзьями</button>
     <div class="or">или присоединитесь к игре друзей</div>
@@ -125,6 +134,13 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   let st = null, ws = null, joinMsg = null, sel = -1, legal = {};
+  const GT = window.Chess3T;
+  let board = 'sectors'; // выбранная на старте доска
+  try { const b = localStorage.getItem('chess3board'); if (b === 't' || b === 'sectors') board = b; } catch (e) {}
+  const curVariant = () => (st ? st.variant : board);
+  function markBoard() { document.querySelectorAll('#boardSel button').forEach((b) => b.classList.toggle('on', b.dataset.b === board)); }
+  document.querySelectorAll('#boardSel button').forEach((b) => { b.onclick = () => { board = b.dataset.b; try { localStorage.setItem('chess3board', board); } catch (e) {} markBoard(); }; });
+  markBoard();
 
   // ================= карта =================
   // Клетки и их соседство берутся из game.js, положение клеток на плоскости — из layout.js
@@ -200,7 +216,7 @@
     s.onopen = () => {
       if (ws !== s) return;
       $('offline').style.display = 'none';
-      s.send(JSON.stringify({ type: 'join', mode: joinMsg.mode, room: joinMsg.room, initData: tg ? tg.initData : '', devId, name: devName }));
+      s.send(JSON.stringify({ type: 'join', mode: joinMsg.mode, room: joinMsg.room, board: joinMsg.board, initData: tg ? tg.initData : '', devId, name: devName }));
     };
     s.onmessage = (e) => {
       if (ws !== s) return;
@@ -237,8 +253,8 @@
     if (/^[A-Za-z0-9]{3,8}$/.test(t)) return t.toUpperCase();
     return null;
   }
-  $('mBots').onclick = () => startJoin({ mode: 'bots' });
-  $('mCreate').onclick = () => startJoin({ mode: 'create' });
+  $('mBots').onclick = () => startJoin({ mode: 'bots', board });
+  $('mCreate').onclick = () => startJoin({ mode: 'create', board });
   function doJoin() {
     const code = parseCode($('joinIn').value);
     if (!code) { toast('Вставьте ссылку-приглашение или код комнаты'); return; }
@@ -351,7 +367,7 @@
     <p>Коснитесь своей фигуры — подсветятся ходы (точка — ход, кольцо — взятие), затем коснитесь клетки. Жёлтым отмечен последний ход.</p>
     <div class="note">Боты играют простой жадной стратегией: берут то, что не защищено, и стараются не подставляться.</div>`;
   }
-  $('bRules').onclick = () => openModal('Правила игры', rulesHtml());
+  $('bRules').onclick = () => openModal('Правила игры', curVariant() === 't' ? tRulesHtml() : rulesHtml());
 
   const BGS = [
     { id: 'tg', name: 'Как в Telegram', css: 'var(--tg-theme-bg-color, #16181d)', dark: true },
@@ -396,6 +412,101 @@
     document.querySelectorAll('.sw.on').forEach((x) => x.classList.remove('on'));
   });
   try { const saved = JSON.parse(localStorage.getItem('chess3bg') || 'null'); if (saved) applyBg(saved, false); } catch (e) {}
+
+  // ================= доска «Т» =================
+  const TS = 40;
+  const tTint = (x, y) => (y >= 8 ? 0 : x <= 2 ? 1 : x >= 11 ? 2 : -1);
+  /* o: me, pieces, alive, last, sel, targets[{c,cap}], check[], interactive */
+  function tSvg(o) {
+    const me = o.view || 0, S = TS, Wp = GT.W * S, Hp = GT.H * S;
+    const rot = me === 1 ? -90 : me === 2 ? 90 : 0;
+    const vw = rot ? Hp : Wp, vh = rot ? Wp : Hp;
+    const tf = rot === -90 ? `translate(0 ${Wp}) rotate(-90)` : rot === 90 ? `translate(${Hp} 0) rotate(90)` : '';
+    let base = '', over = '', pcs = '';
+    const rc = (c, extra) => `x="${GT.xOf(c) * S}" y="${GT.yOf(c) * S}" width="${S}" height="${S}" ${extra}`;
+    for (let c = 0; c < GT.NC; c++) {
+      const x = GT.xOf(c), y = GT.yOf(c);
+      if (!GT.valid(x, y)) continue;
+      base += `<rect ${o.interactive ? `data-c="${c}"` : ''} ${rc(c, `fill="${(x + y) % 2 ? '#b58863' : '#ecd9b6'}"`)}/>`;
+      const t = tTint(x, y);
+      if (t >= 0) base += `<rect class="np" ${rc(c, `fill="${COLORS[t]}" opacity=".3"`)}/>`;
+    }
+    if (o.last) for (const c of [o.last.from, o.last.to]) over += `<rect class="np" ${rc(c, 'fill="#ffe04d" opacity=".5"')}/>`;
+    if (o.sel >= 0) over += `<rect class="np" x="${GT.xOf(o.sel) * S + 2}" y="${GT.yOf(o.sel) * S + 2}" width="${S - 4}" height="${S - 4}" fill="none" stroke="#2f80ed" stroke-width="3"/>`;
+    const ctr = (c) => [GT.xOf(c) * S + S / 2, GT.yOf(c) * S + S / 2];
+    (o.pieces || []).forEach((pc, c) => {
+      if (!pc) return;
+      const ow = +pc[0], [x, y] = ctr(c), dead = o.alive && !o.alive[ow];
+      if (pc[1] === 'K' && o.check && o.check[ow] && o.alive[ow]) over += `<circle class="np" cx="${x}" cy="${y}" r="${S / 2 - 2}" fill="#ff3b30" opacity=".55"/>`;
+      pcs += `<text class="np" x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="central" font-size="${S - 4}"
+        fill="${dead ? DEAD : COLORS[ow]}" stroke="${dead ? '#444' : STROKE[ow]}" stroke-width="1.3" paint-order="stroke"
+        transform="rotate(${-rot} ${x} ${y})">${GLYPH[pc[1]]}︎</text>`;
+    });
+    for (const m of o.targets || []) {
+      const [x, y] = ctr(m.c);
+      over += m.cap ? `<circle class="np" cx="${x}" cy="${y}" r="${S / 2 - 3}" fill="none" stroke="#2f80ed" stroke-width="3.5"/>`
+                    : `<circle class="np" cx="${x}" cy="${y}" r="6" fill="#2f80ed" opacity=".8"/>`;
+    }
+    return `<svg viewBox="0 0 ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg"><g transform="${tf}">${base}${over}${pcs}</g></svg>`;
+  }
+  function tBoardFig() {
+    const s = 20;
+    let c = '';
+    for (let y = 0; y < GT.H; y++) for (let x = 0; x < GT.W; x++) {
+      if (!GT.valid(x, y)) continue;
+      c += `<rect x="${x * s}" y="${y * s}" width="${s}" height="${s}" fill="${(x + y) % 2 ? '#b58863' : '#ecd9b6'}"/>`;
+      const t = tTint(x, y);
+      if (t >= 0) c += `<rect x="${x * s}" y="${y * s}" width="${s}" height="${s}" fill="${COLORS[t]}" opacity=".38"/>`;
+    }
+    const dash = (x1, y1, x2, y2, p) =>
+      `<line x1="${x1 * s}" y1="${y1 * s}" x2="${x2 * s}" y2="${y2 * s}" stroke="${STROKE[p]}" stroke-width="5" stroke-dasharray="6 4"/>` +
+      `<line x1="${x1 * s}" y1="${y1 * s}" x2="${x2 * s}" y2="${y2 * s}" stroke="${COLORS[p]}" stroke-width="3" stroke-dasharray="6 4"/>`;
+    const arrow = (x1, y1, x2, y2, p) =>
+      `<line x1="${x1 * s}" y1="${y1 * s}" x2="${x2 * s}" y2="${y2 * s}" stroke="${STROKE[p]}" stroke-width="7" stroke-linecap="round"/>` +
+      `<line x1="${x1 * s}" y1="${y1 * s}" x2="${x2 * s}" y2="${y2 * s}" stroke="${COLORS[p]}" stroke-width="4" stroke-linecap="round" marker-end="url(#ah${p})"/>`;
+    const marks = COLORS.map((k, p) => `<marker id="ah${p}" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0L10 5L0 10z" fill="${k}" stroke="${STROKE[p]}" stroke-width="1.6"/></marker>`).join('');
+    c += dash(3, 0, 11, 0, 0) + dash(11, 0, 11, 8, 1) + dash(3, 0, 3, 8, 2);
+    c += arrow(7, 10.6, 7, 4.5, 0) + arrow(0.5, 1.8, 5.5, 1.8, 1) + arrow(13.5, 6.2, 8.5, 6.2, 2);
+    const lab = (t, x, y) => `<text x="${x * s}" y="${y * s}" text-anchor="middle" font-size="9.5" font-weight="700" fill="#1c1f26" stroke="#fff" stroke-width="2.4" paint-order="stroke">${t}</text>`;
+    c += lab(NAMES[0], 7, 9.6) + lab(NAMES[1], 1.5, 4.6) + lab(NAMES[2], 12.5, 3.6);
+    return fig(`<svg viewBox="-6 -6 292 232" xmlns="http://www.w3.org/2000/svg"><defs>${marks}</defs>${c}</svg>`,
+      'Стрелки — куда идут пешки каждого цвета. Пунктир — линия, на которой пешка того же цвета превращается.');
+  }
+  // ходы фигуры на пустой доске «Т»
+  function tReach(t, c) {
+    const g = { board: new Array(GT.NC).fill(null), alive: [true, true, true] };
+    g.board[c] = { t, o: 0 };
+    return GT.gen(g, 0, false).map((m) => m.to);
+  }
+  function tPieceFig(t, at, color) {
+    const pcs = new Array(GT.NC).fill(null); pcs[at] = '0' + t;
+    return fig(tSvg({ view: 0, pieces: pcs, alive: [true, true, true], targets: tReach(t, at).map((c) => ({ c, cap: false })) }), '');
+  }
+  function tRulesHtml() {
+    const at = GT.idx(6, 4);
+    return `
+    <h4>Доска</h4>
+    <p>Доска в форме буквы «Т»: центральное поле 8×8 и три рукава по 3×8 клеток — у каждого игрока свой, с 16 фигурами. Четвёртой стороны нет. Ходят по очереди: белые (внизу) → красные (слева) → чёрные (справа). В игре ваш рукав всегда внизу.</p>
+    ${tBoardFig()}
+    <h4>Как ходят фигуры</h4>
+    <p>Фигуры ходят как в обычных шахматах, только по доске «Т»: за край доски ходить нельзя, но через центр можно.</p>
+    <p><b>♜ Ладья</b> — по прямой по горизонтали и вертикали на любое число свободных клеток.</p>
+    ${tPieceFig('R', at)}
+    <p><b>♝ Слон</b> — по диагоналям на любое число свободных клеток.</p>
+    ${tPieceFig('B', at)}
+    <p><b>♛ Ферзь</b> — как ладья и слон вместе.</p>
+    ${tPieceFig('Q', at)}
+    <p><b>♞ Конь</b> — «буквой Г»: две клетки в одну сторону и одна вбок; перепрыгивает фигуры.</p>
+    ${tPieceFig('N', at)}
+    <p><b>♚ Король</b> — на одну клетку в любую сторону.</p>
+    ${tPieceFig('K', at)}
+    <p><b>♟ Пешка</b> идёт к центру и дальше: нижняя — вверх, левая — вправо, правая — влево. На одну клетку вперёд (с начальной линии можно на две), бьёт по диагонали вперёд. Дойдя до дальнего края центрального поля 8×8 (пунктир на схеме), превращается в ферзя, ладью, слона или коня на ваш выбор.</p>
+    <h4>Цель и конец партии</h4>
+    <p>Шаха и мата нет — нужно <b>взять короля</b>. Король под ударом подсвечивается красным, но ходить можно как угодно, так что не зевайте. Игрок, потерявший короля, выбывает; его фигуры становятся серыми и остаются на доске: не ходят, но их можно брать. Побеждает последний игрок с королём. Ничья — если ни у кого нет ходов или сыграно 450 ходов. Рокировки и взятия на проходе нет.</p>
+    <h4>Управление</h4>
+    <p>Коснитесь своей фигуры — подсветятся ходы (точка — ход, кольцо — взятие), затем коснитесь клетки. Жёлтым отмечен последний ход.</p>
+    <div class="note">Боты играют простой жадной стратегией: берут то, что не защищено, и стараются не подставляться.</div>`;
+  }
 
   // ================= экран игры =================
   function addBtn(label, fn, sec) {
@@ -460,10 +571,11 @@
 
   function drawBoard() {
     const targets = sel >= 0 ? (legal[sel] || []).map((m) => ({ c: m.to, cap: !!st.board[m.to] })) : [];
-    $('boardWrap').innerHTML = mapSvg({
+    const o = {
       view: st.me >= 0 ? st.me : 0, S: 30, pieces: st.board, alive: st.alive, check: st.check,
       last: st.last, sel, targets, interactive: true,
-    });
+    };
+    $('boardWrap').innerHTML = st.variant === 't' ? tSvg(o) : mapSvg(o);
     $('boardWrap').querySelector('svg').addEventListener('click', onClick);
   }
 

@@ -161,3 +161,36 @@ const kings = (g) => { put(g, 0, 4, 0, 'K', 0); put(g, 1, 4, 0, 'K', 1); put(g, 
 }
 
 console.log('OK: все тесты пройдены');
+
+// ===== вариант «Т» (tgame.js) =====
+{
+  const T = require('./tgame');
+  const g = T.newGame();
+  let cells = 0;
+  for (let y = 0; y < T.H; y++) for (let x = 0; x < T.W; x++) if (T.valid(x, y)) cells++;
+  assert.strictEqual(cells, 136);
+  for (let p = 0; p < 3; p++) {
+    assert.strictEqual(g.board.filter((c) => c && c.o === p).length, 16);
+    assert.strictEqual(T.gen(g, p).length, 20, 'ходов у игрока ' + p);
+  }
+  assert.strictEqual(T.applyMove(g, 1, T.idx(0, 0), T.idx(0, 1)).ok, false);
+  assert.strictEqual(T.applyMove(g, 0, T.idx(3, 9), T.idx(3, 7)).ok, true);
+  assert.strictEqual(g.turn, 1);
+  for (let n = 0; n < 100; n++) {
+    const q = T.newGame(); let k = 0;
+    while (!q.over && k++ < 2000) {
+      const ms = T.gen(q, q.turn), m = ms[Math.floor(Math.random() * ms.length)];
+      assert.ok(T.applyMove(q, q.turn, m.from, m.to, 'Q').ok);
+    }
+    assert.ok(q.over);
+  }
+  for (let n = 0; n < 10; n++) {
+    const q = T.newGame(); let k = 0;
+    while (!q.over && k++ < 1000) {
+      const m = B.chooseMove(q, q.turn, T);
+      assert.ok(m && T.applyMove(q, q.turn, m.from, m.to, 'Q').ok);
+    }
+    assert.ok(q.over);
+  }
+  console.log('OK: вариант «Т»');
+}

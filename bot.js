@@ -7,11 +7,11 @@
  *  − сильный штраф, если после хода под ударом остаётся свой король
  *  + небольшая тяга к центру и к королям соперников, продвижение пешек, капля случайности
  */
-const G = require('./game');
+const G0 = require('./game');
 
 const VAL = { P: 1, N: 3, B: 3.2, R: 5, Q: 9, K: 100 };
 
-function attacked(g, c, p) {
+function attacked(G, g, c, p) {
   for (let q = 0; q < 3; q++) {
     if (q === p || !g.alive[q]) continue;
     if (G.gen(g, q, true).some((m) => m.to === c)) return true;
@@ -19,10 +19,8 @@ function attacked(g, c, p) {
   return false;
 }
 
-// продвижение пешки: 0..3 в своём секторе, 4..7 в чужом (идёт к его краю)
-const progress = (p, c) => (G.secOf(c) === p ? G.rankOf(c) : 4 + (3 - G.rankOf(c)));
-
-function chooseMove(g, p) {
+function chooseMove(g, p, G) {
+  G = G || G0;
   const moves = G.gen(g, p);
   if (!moves.length) return null;
   const b = g.board;
@@ -42,8 +40,8 @@ function chooseMove(g, p) {
 
     if (cap) s += (cap.t === 'K' ? 1000 : VAL[cap.t] * (g.alive[cap.o] ? 1 : 0.3));
     if (m.pr) s += 8;
-    s += 0.05 * G.rankOf(m.to); // чем ближе к центру, тем лучше
-    if (pc.t === 'P') s += 0.1 * progress(p, m.to);
+    s += 0.05 * G.central(m.to); // чем ближе к центру, тем лучше
+    if (pc.t === 'P') s += 0.1 * G.progress(p, m.to);
     else if (pc.t !== 'K') s += 0.12 * (kingDist(m.from) - kingDist(m.to));
 
     // примеряем ход
@@ -54,7 +52,7 @@ function chooseMove(g, p) {
     if (cap && cap.t === 'K') g.alive[cap.o] = false;
 
     if (!(cap && cap.t === 'K')) {
-      if (attacked(g, m.to, p)) s -= VAL[pc.t] * 0.85;
+      if (attacked(G, g, m.to, p)) s -= VAL[pc.t] * 0.85;
       if (G.inCheck(g, p)) s -= 60;
     }
 
