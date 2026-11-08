@@ -69,7 +69,7 @@ function newCode() {
   return c;
 }
 function getRoom(code, variant) {
-  if (!rooms.has(code)) rooms.set(code, { variant: variant === 't' ? 't' : 'sectors', code, seats: [null, null, null], game: null, clients: new Set(), touched: Date.now() });
+  if (!rooms.has(code)) rooms.set(code, { colors: [null, null, null], chat: [], lastChat: new Map(), variant: variant === 't' ? 't' : 'sectors', code, seats: [null, null, null], game: null, clients: new Set(), touched: Date.now() });
   return rooms.get(code);
 }
 function inviteLink(code) {
@@ -83,7 +83,7 @@ function view(room, seat) {
   const v = {
     type: 'state', variant: room.variant, room: room.code, invite: inviteLink(room.code), me: seat,
     seats: room.seats.map((s) => (s ? { name: s.name, bot: !!s.bot } : null)),
-    started: !!g,
+    started: !!g, colors: room.colors,
   };
   if (g) {
     v.board = g.board.map((p) => (p ? p.o + p.t : null));
@@ -163,6 +163,7 @@ wss.on('connection', (ws) => {
       if (mode === 'bots' && isNew) fillWithBots(room);
       if (!room.game && room.seats.every(Boolean)) room.game = eng(room).newGame();
       broadcast(room);
+      send(ws, { type: 'chat', list: room.chat });
       return;
     }
 
@@ -171,6 +172,24 @@ wss.on('connection', (ws) => {
     const g = room.game;
     room.touched = Date.now();
 
+    if (msg.type === 'chat') {
+      const text = String(msg.text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      const now = Date.now(), uid = ws.ctx.user.id;
+      if (!text || now - (room.lastChat.get(uid) || 0) < 700) return;
+      room.lastChat.set(uid, now);
+      const m = { seat, name: ws.ctx.user.name, text, t: now };
+      room.chat.push(m);
+      if (room.chat.length > 60) room.chat.shift();
+      for (const c of room.clients) send(c, { type: 'chat', msg: m });
+      return;
+    }
+    if (msg.type === 'color' && seat >= 0) {
+      const hex = (v) => (/^#[0-9a-fA-F]{6}$/.test(String(v)) ? String(v).toLowerCase() : null);
+      const piece = hex(msg.piece), field = hex(msg.field);
+      room.colors[seat] = piece || field ? { piece, field } : null;
+      broadcast(room);
+      return;
+    }
     if (msg.type === 'move' && g && seat >= 0) {
       if (!Number.isInteger(msg.from) || !Number.isInteger(msg.to)) return;
       const r = eng(room).applyMove(g, seat, msg.from, msg.to, msg.promo);
@@ -195,7 +214,7 @@ wss.on('connection', (ws) => {
     // до начала партии освобождаем место, если игрок ушёл
     if (!room.game && seat >= 0) {
       const still = [...room.clients].some((c) => c.ctx && c.ctx.user.id === user.id);
-      if (!still) { room.seats[seat] = null; broadcast(room); }
+      if (!still) { room.seats[seat] = null; room.colors[seat] = null; broadcast(room); }
     }
   });
 });

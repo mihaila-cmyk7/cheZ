@@ -73,6 +73,14 @@
   .seg button { flex: 1; background: var(--card); color: var(--fg); border: 2px solid transparent; padding: 9px 8px; font-size: 14px; }
   .seg button.on { border-color: var(--btn); }
   .seg small { display: block; font-weight: 400; opacity: .7; font-size: 11.5px; margin-top: 2px; }
+  #boardWrap.d3 { touch-action: none; cursor: grab; }
+  #chat { display: none; flex-direction: column; gap: 8px; padding: 10px; }
+  #chatLog { max-height: 150px; overflow-y: auto; font-size: 14px; display: flex; flex-direction: column; gap: 4px; text-align: left; }
+  #chatLog .cm { word-break: break-word; }
+  #chatLog .cd { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; border: 1px solid rgba(128,128,128,.7); }
+  #chat .row { display: flex; gap: 6px; }
+  #chat input { flex: 1; min-width: 0; background: rgba(128,128,128,.18); color: var(--fg); border: 0; border-radius: 10px; padding: 9px 11px; font-size: 15px; }
+  #chat .hint { color: var(--hint); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -81,6 +89,7 @@
     <div class="brand">♟ Шахматы на троих</div>
     <div class="btns">
       <button class="sec ic" id="bRules">Правила</button>
+      <button class="sec ic" id="bView">3D</button>
       <button class="sec ic" id="bBg">Фон</button>
     </div>
   </div>
@@ -106,6 +115,7 @@
   <div id="status"></div>
   <div id="boardWrap"></div>
   <div id="lobby" class="card"></div>
+  <div id="chat" class="card"><div id="chatLog"></div><div class="row"><input id="chatIn" maxlength="200" placeholder="Сообщение…" autocomplete="off"><button id="chatSend">➤</button></div></div>
   <div id="actions"></div>
 </div>
 
@@ -129,6 +139,40 @@
   const STROKE = ['#222', '#4a0d08', '#e6e6e6'];
   const NAMES = ['белые', 'красные', 'чёрные'];
   const DEAD = '#8a8f98';
+  const DEF_COLORS = COLORS.slice(), DEF_STROKE = STROKE.slice(), DEF_FIELD = COLORS.slice(), FIELD = COLORS.slice();
+  const strokeFor = (hex) => { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 > 0.5 ? '#222' : '#eee'; };
+  function applyColors(cols) {
+    for (let p = 0; p < 3; p++) {
+      const c = cols && cols[p];
+      COLORS[p] = (c && c.piece) || DEF_COLORS[p];
+      STROKE[p] = c && c.piece ? strokeFor(c.piece) : DEF_STROKE[p];
+      FIELD[p] = (c && c.field) || DEF_FIELD[p];
+    }
+  }
+  function withDefaults(fn) {
+    const a = COLORS.slice(), b = STROKE.slice(), c = FIELD.slice();
+    COLORS.splice(0, 3, ...DEF_COLORS); STROKE.splice(0, 3, ...DEF_STROKE); FIELD.splice(0, 3, ...DEF_FIELD);
+    try { return fn(); } finally { COLORS.splice(0, 3, ...a); STROKE.splice(0, 3, ...b); FIELD.splice(0, 3, ...c); }
+  }
+
+  // ---- вид 3D: проекция точек доски с наклоном и поворотом
+  let v3 = { on: false, yaw: 0, pitch: 0.95 };
+  try { const j = JSON.parse(localStorage.getItem('chess3v3') || 'null'); if (j) v3 = Object.assign(v3, j); } catch (e) {}
+  const saveV3 = () => { try { localStorage.setItem('chess3v3', JSON.stringify(v3)); } catch (e) {} };
+  function makeProj(all, v) {
+    let cx = 0, cy = 0;
+    for (const [x, y] of all) { cx += x; cy += y; }
+    cx /= all.length; cy /= all.length;
+    let R = 0;
+    for (const [x, y] of all) R = Math.max(R, Math.hypot(x - cx, y - cy));
+    const D = 3.4 * R, cp = Math.cos(v.pitch), sp = Math.sin(v.pitch);
+    const mk = (yaw) => { const c = Math.cos(yaw), s = Math.sin(yaw);
+      return (x, y) => { const dx = x - cx, dy = y - cy, u = dx * c - dy * s, w = dx * s + dy * c, z = w * sp, k = D / (D - z); return [u * k, w * cp * k, k, z]; }; };
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (let i = 0; i < 16; i++) { const f = mk(i * Math.PI / 8); for (const [x, y] of all) { const q = f(x, y); x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); } }
+    y0 -= R * 0.14;
+    return { f: mk(v.yaw), vb: [x0, y0, x1 - x0, y1 - y0], cp, sp };
+  }
   const GLYPH = { K: '♚', Q: '♛', R: '♜', B: '♝', N: '♞', P: '♟' };
 
   const $ = (id) => document.getElementById(id);
@@ -164,9 +208,17 @@
   /* Рисует карту. o: view, S, pieces[96] ('0K'…), alive, last{from,to}, sel, targets[{c,cap}], check[],
      marks[{c,color,kind}], interactive, pad, decor(S, view, P) -> svg-строка */
   function mapSvg(o) {
-    const view = o.view || 0, S = o.S || 30, P = polys(view);
+    const view = o.view || 0, S = o.S || 30;
+    let P = polys(view), prj = null;
+    if (o.d3) {
+      prj = makeProj([].concat(...P.map((q) => q.pts)), v3);
+      P = P.map((q) => { const pts = q.pts.map(([x, y]) => prj.f(x, y)), c = prj.f(q.ctr[0], q.ctr[1]);
+        return { pts, ctr: [c[0], c[1]], sz: q.sz * c[2], s: c[2], z: c[3] }; });
+    }
+    const sq = prj ? prj.cp : 1;
     let minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
     for (const q of P) for (const [x, y] of q.pts) { minx = Math.min(minx, x); miny = Math.min(miny, y); maxx = Math.max(maxx, x); maxy = Math.max(maxy, y); }
+    if (prj) { minx = prj.vb[0]; miny = prj.vb[1]; maxx = minx + prj.vb[2]; maxy = miny + prj.vb[3]; }
     const pad = o.pad === undefined ? 0.4 : o.pad;
     const vx = (minx - pad) * S, vy = (miny - pad) * S, vw = (maxx - minx + 2 * pad) * S, vh = (maxy - miny + 2 * pad) * S;
     const pts = (q) => q.pts.map(([x, y]) => `${(x * S).toFixed(1)},${(y * S).toFixed(1)}`).join(' ');
@@ -176,40 +228,45 @@
     for (let c = 0; c < 96; c++) {
       const a = G.secOf(c), dark = (G.fileOf(c) + G.rankOf(c)) % 2;
       base += `<polygon ${o.interactive ? `data-c="${c}"` : ''} points="${pts(P[c])}" fill="${dark ? '#b58863' : '#ecd9b6'}" stroke="rgba(0,0,0,.45)" stroke-width=".7" stroke-linejoin="round"/>`;
-      base += `<polygon class="np" points="${pts(P[c])}" fill="${COLORS[a]}" opacity=".3"/>`;
+      base += `<polygon class="np" points="${pts(P[c])}" fill="${FIELD[a]}" opacity=".3"/>`;
     }
     if (o.last) for (const c of [o.last.from, o.last.to]) over += `<polygon class="np" points="${pts(P[c])}" fill="#ffe04d" opacity=".5"/>`;
     if (o.sel !== undefined && o.sel >= 0) over += `<polygon class="np" points="${pts(P[o.sel])}" fill="none" stroke="#2f80ed" stroke-width="3" stroke-linejoin="round"/>`;
     if (o.check) {
       (o.pieces || []).forEach((pc, c) => {
-        if (pc && pc[1] === 'K' && o.check[+pc[0]] && o.alive[+pc[0]]) { const [x, y] = sc(c); over += `<circle class="np" cx="${x}" cy="${y}" r="${rs(c, 0.45)}" fill="#ff3b30" opacity=".55"/>`; }
+        if (pc && pc[1] === 'K' && o.check[+pc[0]] && o.alive[+pc[0]]) { const [x, y] = sc(c); over += `<ellipse class="np" cx="${x}" cy="${y}" rx="${rs(c, 0.45)}" ry="${(rs(c, 0.45)) * sq}" fill="#ff3b30" opacity=".55"/>`; }
       });
     }
     for (const m of o.marks || []) {
       const [x, y] = sc(m.c);
       if (m.kind === 'star') over += `<text class="np" x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-size="${rs(m.c, 0.85)}" fill="${m.color}" stroke="#fff" stroke-width="2" paint-order="stroke">★</text>`;
-      else if (m.kind === 'ring') over += `<circle class="np" cx="${x}" cy="${y}" r="${rs(m.c, 0.4)}" fill="none" stroke="${m.color}" stroke-width="3"/>`;
-      else over += `<circle class="np" cx="${x}" cy="${y}" r="${rs(m.c, 0.2)}" fill="${m.color}" stroke="#fff" stroke-width="1.3"/>`;
+      else if (m.kind === 'ring') over += `<ellipse class="np" cx="${x}" cy="${y}" rx="${rs(m.c, 0.4)}" ry="${(rs(m.c, 0.4)) * sq}" fill="none" stroke="${m.color}" stroke-width="3"/>`;
+      else over += `<ellipse class="np" cx="${x}" cy="${y}" rx="${rs(m.c, 0.2)}" ry="${(rs(m.c, 0.2)) * sq}" fill="${m.color}" stroke="#fff" stroke-width="1.3"/>`;
     }
     for (const t of o.targets || []) {
       const [x, y] = sc(t.c);
-      over += t.cap ? `<circle class="np" cx="${x}" cy="${y}" r="${rs(t.c, 0.42)}" fill="none" stroke="#2f80ed" stroke-width="3.5"/>`
-                    : `<circle class="np" cx="${x}" cy="${y}" r="${rs(t.c, 0.2)}" fill="#2f80ed" opacity=".85"/>`;
+      over += t.cap ? `<ellipse class="np" cx="${x}" cy="${y}" rx="${rs(t.c, 0.42)}" ry="${(rs(t.c, 0.42)) * sq}" fill="none" stroke="#2f80ed" stroke-width="3.5"/>`
+                    : `<ellipse class="np" cx="${x}" cy="${y}" rx="${rs(t.c, 0.2)}" ry="${(rs(t.c, 0.2)) * sq}" fill="#2f80ed" opacity=".85"/>`;
     }
-    (o.pieces || []).forEach((pc, c) => {
-      if (!pc) return;
-      const ow = +pc[0], [x, y] = sc(c), dead = o.alive && !o.alive[ow];
+    const order = [...Array(96).keys()];
+    if (prj) order.sort((p, q) => P[p].z - P[q].z);
+    for (const c of order) {
+      const pc = o.pieces && o.pieces[c];
+      if (!pc) continue;
+      const ow = +pc[0], [x, by] = sc(c), dead = o.alive && !o.alive[ow];
+      let y = by;
+      if (prj) { y -= S * prj.sp * P[c].s * 0.4; pcs += `<ellipse class="np" cx="${x}" cy="${by}" rx="${rs(c, 0.3)}" ry="${rs(c, 0.3) * sq}" fill="#000" opacity=".3"/>`; }
       pcs += `<text class="np" x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="central" font-size="${rs(c, 0.85 * (o.ps || 1))}"
         fill="${dead ? DEAD : COLORS[ow]}" stroke="${dead ? '#444' : STROKE[ow]}" stroke-width="1.2" paint-order="stroke">${GLYPH[pc[1]]}︎</text>`;
-    });
+    }
     const dec = o.decor ? o.decor(S, view, P) : '';
     return `<svg viewBox="${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}" xmlns="http://www.w3.org/2000/svg">${base}${over}${dec}${pcs}</svg>`;
   }
 
   // ================= сеть =================
   function stopConn() { const s = ws; ws = null; if (s) { s.onclose = null; try { s.close(); } catch (e) {} } }
-  function startJoin(opts) { stopConn(); st = null; sel = -1; joinMsg = opts; render(); connect(); }
-  function toMenu() { stopConn(); st = null; sel = -1; joinMsg = null; $('offline').style.display = 'none'; render(); }
+  function startJoin(opts) { stopConn(); st = null; sel = -1; chat = []; unread = 0; applyColors(null); joinMsg = opts; render(); connect(); }
+  function toMenu() { stopConn(); st = null; sel = -1; joinMsg = null; chat = []; unread = 0; applyColors(null); $('offline').style.display = 'none'; render(); }
   function connect() {
     const s = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
     ws = s;
@@ -221,7 +278,12 @@
     s.onmessage = (e) => {
       if (ws !== s) return;
       const m = JSON.parse(e.data);
-      if (m.type === 'state') { st = m; joinMsg = { mode: 'join', room: m.room }; sel = -1; indexLegal(); render(); }
+      if (m.type === 'chat') {
+        if (m.list) chat = m.list.slice(-60);
+        else { chat.push(m.msg); chat = chat.slice(-60); if (!chatOpen && (!st || m.msg.seat !== st.me)) unread++; }
+        if (!chatOpen && m.msg) render(); else renderChat();
+      }
+      else if (m.type === 'state') { if (!st) chatOpen = !m.started; applyColors(m.colors); st = m; joinMsg = { mode: 'join', room: m.room }; sel = -1; indexLegal(); render(); }
       else if (m.type === 'error') { toast(m.msg); if (m.code === 'noroom') toMenu(); }
     };
     s.onclose = () => {
@@ -230,6 +292,7 @@
       setTimeout(() => { if (ws === s) connect(); }, 1500);
     };
   }
+  let chat = [], chatOpen = false, unread = 0;
   const sendMsg = (o) => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
   function indexLegal() {
     legal = {};
@@ -367,7 +430,7 @@
     <p>Коснитесь своей фигуры — подсветятся ходы (точка — ход, кольцо — взятие), затем коснитесь клетки. Жёлтым отмечен последний ход.</p>
     <div class="note">Боты играют простой жадной стратегией: берут то, что не защищено, и стараются не подставляться.</div>`;
   }
-  $('bRules').onclick = () => openModal('Правила игры', curVariant() === 't' ? tRulesHtml() : rulesHtml());
+  $('bRules').onclick = () => openModal('Правила игры', withDefaults(() => (curVariant() === 't' ? tRulesHtml() : rulesHtml())));
 
   const BGS = [
     { id: 'tg', name: 'Как в Telegram', css: 'var(--tg-theme-bg-color, #16181d)', dark: true },
@@ -399,12 +462,14 @@
   }
   $('bBg').onclick = () => openModal('Фон', bgHtml());
   $('mb').addEventListener('click', (e) => {
+    if (e.target.id === 'cres') { sendColors(true); $('pcol').value = DEF_COLORS[st.me]; $('fcol').value = DEF_FIELD[st.me]; return; }
     const b = e.target.closest('[data-bg]');
     if (!b) return;
     applyBg(BGS.find((x) => x.id === b.dataset.bg), true);
     $('mb').innerHTML = bgHtml();
   });
   $('mb').addEventListener('input', (e) => {
+    if (e.target.id === 'pcol' || e.target.id === 'fcol') { sendColors(false); return; }
     if (e.target.id !== 'bgc') return;
     const c = e.target.value, n = parseInt(c.slice(1), 16);
     const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
@@ -418,36 +483,49 @@
   const tTint = (x, y) => (y >= 8 ? 0 : x <= 2 ? 1 : x >= 11 ? 2 : -1);
   /* o: me, pieces, alive, last, sel, targets[{c,cap}], check[], interactive */
   function tSvg(o) {
-    const me = o.view || 0, S = TS, Wp = GT.W * S, Hp = GT.H * S;
-    const rot = me === 1 ? -90 : me === 2 ? 90 : 0;
-    const vw = rot ? Hp : Wp, vh = rot ? Wp : Hp;
-    const tf = rot === -90 ? `translate(0 ${Wp}) rotate(-90)` : rot === 90 ? `translate(${Hp} 0) rotate(90)` : '';
-    let base = '', over = '', pcs = '';
-    const rc = (c, extra) => `x="${GT.xOf(c) * S}" y="${GT.yOf(c) * S}" width="${S}" height="${S}" ${extra}`;
+    const me = o.view || 0, S = TS, Wp = GT.W * S, Hp = GT.H * S, cw = Wp / 2, ch = Hp / 2;
+    const ra = (me === 1 ? -90 : me === 2 ? 90 : 0) * Math.PI / 180, ca = Math.cos(ra), sa = Math.sin(ra);
+    const rot = (x, y) => [cw + (x - cw) * ca - (y - ch) * sa, ch + (x - cw) * sa + (y - ch) * ca];
+    const cells = [];
     for (let c = 0; c < GT.NC; c++) {
       const x = GT.xOf(c), y = GT.yOf(c);
-      if (!GT.valid(x, y)) continue;
-      base += `<rect ${o.interactive ? `data-c="${c}"` : ''} ${rc(c, `fill="${(x + y) % 2 ? '#b58863' : '#ecd9b6'}"`)}/>`;
-      const t = tTint(x, y);
-      if (t >= 0) base += `<rect class="np" ${rc(c, `fill="${COLORS[t]}" opacity=".3"`)}/>`;
+      if (GT.valid(x, y)) cells.push({ c, x, y, q: [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]].map(([a, b]) => rot(a * S, b * S)), m: rot((x + 0.5) * S, (y + 0.5) * S) });
     }
-    if (o.last) for (const c of [o.last.from, o.last.to]) over += `<rect class="np" ${rc(c, 'fill="#ffe04d" opacity=".5"')}/>`;
-    if (o.sel >= 0) over += `<rect class="np" x="${GT.xOf(o.sel) * S + 2}" y="${GT.yOf(o.sel) * S + 2}" width="${S - 4}" height="${S - 4}" fill="none" stroke="#2f80ed" stroke-width="3"/>`;
-    const ctr = (c) => [GT.xOf(c) * S + S / 2, GT.yOf(c) * S + S / 2];
-    (o.pieces || []).forEach((pc, c) => {
-      if (!pc) return;
-      const ow = +pc[0], [x, y] = ctr(c), dead = o.alive && !o.alive[ow];
-      if (pc[1] === 'K' && o.check && o.check[ow] && o.alive[ow]) over += `<circle class="np" cx="${x}" cy="${y}" r="${S / 2 - 2}" fill="#ff3b30" opacity=".55"/>`;
-      pcs += `<text class="np" x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="central" font-size="${S - 4}"
-        fill="${dead ? DEAD : COLORS[ow]}" stroke="${dead ? '#444' : STROKE[ow]}" stroke-width="1.3" paint-order="stroke"
-        transform="rotate(${-rot} ${x} ${y})">${GLYPH[pc[1]]}︎</text>`;
-    });
+    const prj = o.d3 ? makeProj([].concat(...cells.map((k) => k.q)), v3) : null;
+    const tp = (p) => (prj ? prj.f(p[0], p[1]) : [p[0], p[1], 1, 0]);
+    const info = {};
+    for (const k of cells) { const m = tp(k.m); info[k.c] = { pts: k.q.map(tp), ctr: m, s: m[2], z: m[3] }; }
+    const sq = prj ? prj.cp : 1;
+    const poly = (c) => info[c].pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+    let vx0 = 1e9, vy0 = 1e9, vx1 = -1e9, vy1 = -1e9;
+    for (const k of cells) for (const p of info[k.c].pts) { vx0 = Math.min(vx0, p[0]); vx1 = Math.max(vx1, p[0]); vy0 = Math.min(vy0, p[1]); vy1 = Math.max(vy1, p[1]); }
+    if (prj) { vx0 = prj.vb[0]; vy0 = prj.vb[1]; vx1 = vx0 + prj.vb[2]; vy1 = vy0 + prj.vb[3]; }
+    let base = '', over = '', pcs = '';
+    for (const k of cells) {
+      base += `<polygon ${o.interactive ? `data-c="${k.c}"` : ''} points="${poly(k.c)}" fill="${(k.x + k.y) % 2 ? '#b58863' : '#ecd9b6'}"/>`;
+      const t = tTint(k.x, k.y);
+      if (t >= 0) base += `<polygon class="np" points="${poly(k.c)}" fill="${FIELD[t]}" opacity=".3"/>`;
+    }
+    if (o.last) for (const c of [o.last.from, o.last.to]) over += `<polygon class="np" points="${poly(c)}" fill="#ffe04d" opacity=".5"/>`;
+    if (o.sel >= 0) over += `<polygon class="np" points="${poly(o.sel)}" fill="none" stroke="#2f80ed" stroke-width="3" stroke-linejoin="round"/>`;
+    const order = cells.map((k) => k.c);
+    if (prj) order.sort((a, b) => info[a].z - info[b].z);
+    for (const c of order) {
+      const pc = o.pieces && o.pieces[c];
+      if (!pc) continue;
+      const ow = +pc[0], [x, by, s] = info[c].ctr, dead = o.alive && !o.alive[ow];
+      if (pc[1] === 'K' && o.check && o.check[ow] && o.alive[ow]) over += `<ellipse class="np" cx="${x}" cy="${by}" rx="${(S / 2 - 2) * s}" ry="${(S / 2 - 2) * s * sq}" fill="#ff3b30" opacity=".55"/>`;
+      let y = by;
+      if (prj) { y -= S * prj.sp * s * 0.4; pcs += `<ellipse class="np" cx="${x}" cy="${by}" rx="${S * 0.3 * s}" ry="${S * 0.3 * s * sq}" fill="#000" opacity=".3"/>`; }
+      pcs += `<text class="np" x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="central" font-size="${(S - 4) * s}"
+        fill="${dead ? DEAD : COLORS[ow]}" stroke="${dead ? '#444' : STROKE[ow]}" stroke-width="1.3" paint-order="stroke">${GLYPH[pc[1]]}︎</text>`;
+    }
     for (const m of o.targets || []) {
-      const [x, y] = ctr(m.c);
-      over += m.cap ? `<circle class="np" cx="${x}" cy="${y}" r="${S / 2 - 3}" fill="none" stroke="#2f80ed" stroke-width="3.5"/>`
-                    : `<circle class="np" cx="${x}" cy="${y}" r="6" fill="#2f80ed" opacity=".8"/>`;
+      const [x, y, s] = info[m.c].ctr;
+      over += m.cap ? `<ellipse class="np" cx="${x}" cy="${y}" rx="${(S / 2 - 3) * s}" ry="${(S / 2 - 3) * s * sq}" fill="none" stroke="#2f80ed" stroke-width="3.5"/>`
+                    : `<ellipse class="np" cx="${x}" cy="${y}" rx="${6 * s}" ry="${6 * s * sq}" fill="#2f80ed" opacity=".8"/>`;
     }
-    return `<svg viewBox="0 0 ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg"><g transform="${tf}">${base}${over}${pcs}</g></svg>`;
+    return `<svg viewBox="${vx0.toFixed(1)} ${vy0.toFixed(1)} ${(vx1 - vx0).toFixed(1)} ${(vy1 - vy0).toFixed(1)}" xmlns="http://www.w3.org/2000/svg">${base}${over}${pcs}</svg>`;
   }
   function tBoardFig() {
     const s = 20;
@@ -516,6 +594,7 @@
   }
 
   function render() {
+    renderChat();
     const seatsEl = $('seats'), lobby = $('lobby'), wrap = $('boardWrap'), status = $('status');
     $('actions').innerHTML = ''; status.className = '';
 
@@ -550,6 +629,7 @@
         <div class="hint">${st.me >= 0 ? 'Отправьте приглашение друзьям — игра начнётся, когда соберутся трое. Или добавьте ботов на свободные места.' : 'Комната ждёт игроков.'}</div>`;
       status.textContent = '';
       if (st.me >= 0) { addBtn('Пригласить друзей', invite); addBtn('Добавить ботов', () => sendMsg({ type: 'fillbots' }), true); }
+      commonBtns();
       addBtn('В меню', toMenu, true);
       return;
     }
@@ -566,21 +646,90 @@
       else status.textContent = 'Ходит ' + (names[st.turn] ? names[st.turn].name : '…');
       if (st.me >= 0 && st.alive[st.me]) addBtn('Сдаться', () => ask('Сдаться? Ваши фигуры останутся на доске.', () => sendMsg({ type: 'resign' })), true);
     }
+    commonBtns();
     addBtn('В меню', toMenu, true);
   }
+
+  function commonBtns() {
+    if (st.me >= 0) addBtn('🎨 Цвета', () => openModal('Цвета', colorsHtml()), true);
+    addBtn('💬 Чат' + (unread ? ` (${unread})` : ''), () => { chatOpen = !chatOpen; unread = 0; render(); }, true);
+    if (v3.on && st.started) addBtn('Сбросить вид', () => { v3.yaw = 0; v3.pitch = 0.95; saveV3(); drawBoard(); }, true);
+  }
+
+  // ---- чат
+  function renderChat() {
+    const box = $('chat');
+    box.style.display = st && chatOpen ? 'flex' : 'none';
+    if (!st || !chatOpen) return;
+    const log = $('chatLog');
+    log.innerHTML = chat.map((m) => `<div class="cm"><span class="cd" style="background:${m.seat >= 0 ? COLORS[m.seat] : '#999'}"></span><b>${esc(m.name)}:</b> ${esc(m.text)}</div>`).join('')
+      || '<div class="hint">Сообщений пока нет. Напишите первым!</div>';
+    log.scrollTop = log.scrollHeight;
+  }
+  function sendChat() {
+    const t = $('chatIn').value.trim();
+    if (!t) return;
+    sendMsg({ type: 'chat', text: t });
+    $('chatIn').value = '';
+  }
+  $('chatSend').onclick = sendChat;
+  $('chatIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+  // ---- цвета фигур и поля
+  function colorsHtml() {
+    const me = st.me, cur = (st.colors && st.colors[me]) || {};
+    return `<label class="cust">Цвет фигур <input type="color" id="pcol" value="${cur.piece || DEF_COLORS[me]}"></label>
+      <label class="cust">Цвет вашего поля <input type="color" id="fcol" value="${cur.field || DEF_FIELD[me]}"></label>
+      <button class="sec" id="cres">Сбросить цвета</button><div class="note">Цвета видны всем игрокам в комнате.</div>`;
+  }
+  let colTimer = null;
+  function sendColors(reset) {
+    clearTimeout(colTimer);
+    colTimer = setTimeout(() => sendMsg({ type: 'color', piece: reset ? null : $('pcol').value, field: reset ? null : $('fcol').value }), 120);
+  }
+
+  // ---- вид 3D и вращение доски
+  const bView = $('bView');
+  const markView = () => { bView.textContent = v3.on ? '2D' : '3D'; };
+  markView();
+  bView.onclick = () => {
+    v3.on = !v3.on; saveV3(); markView();
+    if (v3.on) toast('Тяните доску пальцем, чтобы повернуть и наклонить');
+    if (st && st.started) { drawBoard(); render(); }
+  };
+  let drawPend = false;
+  const redraw = () => { if (drawPend) return; drawPend = true; requestAnimationFrame(() => { drawPend = false; if (st && st.started) drawBoard(); }); };
+  (() => {
+    const w = $('boardWrap');
+    let down = null;
+    w.addEventListener('pointerdown', (e) => { if (e.button > 0) return; down = { x: e.clientX, y: e.clientY, yaw: v3.yaw, pitch: v3.pitch, drag: false }; });
+    window.addEventListener('pointermove', (e) => {
+      if (!down || !v3.on) return;
+      const dx = e.clientX - down.x, dy = e.clientY - down.y;
+      if (!down.drag && Math.hypot(dx, dy) > 6) down.drag = true;
+      if (down.drag) { v3.yaw = down.yaw + dx * 0.012; v3.pitch = Math.max(0.25, Math.min(1.4, down.pitch + dy * 0.008)); redraw(); }
+    });
+    window.addEventListener('pointerup', (e) => {
+      if (!down) return;
+      const d = down; down = null;
+      if (d.drag) { saveV3(); return; }
+      const el = document.elementFromPoint(e.clientX, e.clientY), cell = el && el.closest && el.closest('[data-c]');
+      if (cell && w.contains(cell)) onTap(cell);
+    });
+    window.addEventListener('pointercancel', () => { down = null; });
+  })();
 
   function drawBoard() {
     const targets = sel >= 0 ? (legal[sel] || []).map((m) => ({ c: m.to, cap: !!st.board[m.to] })) : [];
     const o = {
       view: st.me >= 0 ? st.me : 0, S: 30, pieces: st.board, alive: st.alive, check: st.check,
-      last: st.last, sel, targets, interactive: true,
+      last: st.last, sel, targets, interactive: true, d3: v3.on,
     };
     $('boardWrap').innerHTML = st.variant === 't' ? tSvg(o) : mapSvg(o);
-    $('boardWrap').querySelector('svg').addEventListener('click', onClick);
+    $('boardWrap').classList.toggle('d3', v3.on);
   }
 
-  function onClick(e) {
-    const el = e.target.closest('[data-c]');
+  function onTap(el) {
     if (!el || !st || st.over) return;
     const c = +el.dataset.c;
     if (sel >= 0) {
